@@ -30,17 +30,15 @@ base_path: /web
 Three difficulty levels, all captured from live inference runs using `inference.py`.
 
 ### Easy — Static Targets, No Wind, No NFZ
-![Easy mode demo](submission_video_easy.gif)
+![Easy mode demo](uav_env/submission_video_easy.gif)
 
 ### Medium — Random-Walk Targets, Light Wind (±1.5 m/s)
-![Medium mode demo](submission_video_medium.gif)
+![Medium mode demo](uav_env/submission_video_medium.gif)
 
 ### Hard — Evasive Targets, Full OU Wind (±3 m/s), NFZ Active
-![Hard mode demo](submission_video_hard.gif)
+![Hard mode demo](uav_env/submission_video_hard.gif)
 
-> MP4 versions: [`submission_video_easy.mp4`](submission_video_easy.mp4) · [`submission_video_medium.mp4`](submission_video_medium.mp4) · [`submission_video_hard.mp4`](submission_video_hard.mp4)
-
----
+> MP4 versions: [`submission_video_easy.mp4`](uav_env/submission_video_easy.mp4) · [`submission_video_medium.mp4`](uav_env/submission_video_medium.mp4) · [`submission_video_hard.mp4`](uav_env/submission_video_hard.mp4)
 
 ## 🚀 Submission Description: `uav_env_v3_multi`
 
