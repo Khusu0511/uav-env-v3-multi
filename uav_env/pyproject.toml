@@ -1,0 +1,40 @@
+# Copyright (c) Meta Platforms, Inc. and affiliates.
+# All rights reserved.
+#
+# This source code is licensed under the BSD-style license found in the
+# LICENSE file in the root directory of this source tree.
+[build-system]
+requires = ["setuptools>=45", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "openenv-uav_env"
+version = "0.1.0"
+description = "Uav Env environment for OpenEnv"
+requires-python = ">=3.10"
+
+# --- CORE DEPENDENCIES ---
+# Added numpy for physics, matplotlib/Pillow for 3D rendering, 
+# and imageio for video generation
+dependencies = [
+    "openenv-core[core]>=0.2.2",
+    "numpy>=1.24.0",
+    "matplotlib>=3.7.0",
+    "imageio>=2.31.0",
+    "Pillow>=10.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-cov>=4.0.0",
+]
+
+[project.scripts]
+# Server entry point
+server = "uav_env.server.app:main"
+
+[tool.setuptools]
+include-package-data = true
+packages = ["uav_env", "uav_env.server"]
+package-dir = { "uav_env" = ".", "uav_env.server" = "server" }

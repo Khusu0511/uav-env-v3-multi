@@ -1,0 +1,17 @@
+# Ignore local virtual environments
+.venv/
+venv/
+
+# Ignore Python caches
+__pycache__/
+*.pyc
+
+# Ignore local environment variables
+.env
+
+# Ignore Git history
+.git/
+.gitignore
+
+# Ignore build artifacts
+*.egg-info/

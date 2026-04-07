@@ -1,0 +1,124 @@
+import os
+import sys
+from fastapi import Response
+from fastapi.responses import JSONResponse
+from io import BytesIO
+from PIL import Image
+
+# --- ROOT PATH INJECTION ---
+current_dir = os.path.dirname(os.path.abspath(__file__))
+root_dir = os.path.dirname(current_dir)
+if root_dir not in sys.path:
+    sys.path.insert(0, root_dir)
+
+from server import shared
+from openenv.core.env_server import create_app
+from models import UAVAction, UAVObservation
+from server.uav_env_environment import UavEnvironment
+
+# ---------------------------------------------------------------------------
+# Create the OpenEnv FastAPI app
+# env_name must match the benchmark name used in your inference script.
+# Updated to v3 to reflect:
+#   - Strict NFZ hard-wall enforcement
+#   - 3D evasive target movement
+#   - Observation size: 48 (16 features × 3 agents, added scalar d_nfz)
+# ---------------------------------------------------------------------------
+app = create_app(
+    UavEnvironment,
+    UAVAction,
+    UAVObservation,
+    env_name="uav_env_v3_multi",   # bumped from v2 → v3 (obs shape changed)
+    max_concurrent_envs=1,
+)
+
+
+@app.get("/render")
+async def get_frame():
+    """
+    Returns the current 3D fleet frame as a PNG.
+    Visualises:
+    - 3 UAV-Target pairs (unique colours + labels)
+    - Curved trajectory trails
+    - Red NFZ hard-boundary sphere + orange buffer sphere wireframes
+    - External legend
+    """
+    try:
+        env = shared.active_env
+
+        if env is None:
+            return Response(
+                status_code=404,
+                content="Fleet environment not yet initialised. Call /reset first."
+            )
+
+        frame_array = env.render()
+
+        img = Image.fromarray(frame_array)
+        buf = BytesIO()
+        img.save(buf, format="PNG")
+        buf.seek(0)
+        img.close()
+
+        return Response(content=buf.getvalue(), media_type="image/png")
+
+    except Exception as e:
+        print(f"[ERROR] Render route failed: {e}")
+        return Response(status_code=500, content=f"Render Error: {str(e)}")
+
+
+@app.get("/health")
+async def health():
+    """Health check — confirms server is up and whether an env is active."""
+    env = shared.active_env
+    if env is None:
+        env_status = "Waiting"
+        details = {}
+    else:
+        env_status = "Active"
+        details = {
+            "step": int(env.current_step),
+            "num_agents": env.num_agents,
+            "obs_size": 48,            # 16 features × 3 agents
+            "nfz_count": len(env.nfz_centers),
+            "nfz_hard_radius": env.nfz_hard_radius,
+            "nfz_buffer_radius": env.nfz_buffer_radius,
+            "wind": env.wind.tolist(),
+        }
+
+    return JSONResponse({"status": "ok", "environment": env_status, **details})
+
+
+@app.get("/nfz_status")
+async def nfz_status():
+    """
+    Returns per-UAV NFZ compliance status.
+    Useful for debugging and for your inference script to log violations.
+    """
+    env = shared.active_env
+    if env is None:
+        return Response(status_code=404, content="Environment not initialised.")
+
+    import numpy as np
+    report = []
+    for i in range(env.num_agents):
+        violations = []
+        for j, center in enumerate(env.nfz_centers):
+            d = float(np.linalg.norm(env.uav_pos[i] - center))
+            violations.append({
+                "nfz_index": j,
+                "distance_to_center": round(d, 2),
+                "hard_radius": env.nfz_hard_radius,
+                "buffer_radius": env.nfz_buffer_radius,
+                # True = UAV is inside the hard exclusion zone (should never happen)
+                "hard_violation": d < env.nfz_hard_radius,
+                # True = UAV is in the warning buffer zone
+                "buffer_warning": d < env.nfz_buffer_radius,
+            })
+        report.append({
+            "uav_index": i,
+            "position": [round(x, 2) for x in env.uav_pos[i].tolist()],
+            "nfz_checks": violations,
+        })
+
+    return JSONResponse({"uav_nfz_report": report})

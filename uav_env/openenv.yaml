@@ -1,0 +1,16 @@
+spec_version: 1
+name: uav_env_v3_multi
+type: space
+runtime: fastapi
+app: server.app:app
+port: 8000
+tasks:
+  - id: easy
+    description: "3 UAVs, static targets, no wind, no NFZ"
+    difficulty: easy
+  - id: medium
+    description: "3 UAVs, random-walk targets, light wind, no NFZ"
+    difficulty: medium
+  - id: hard
+    description: "3 UAVs, evasive targets, full OU wind, NFZ active"
+    difficulty: hard
