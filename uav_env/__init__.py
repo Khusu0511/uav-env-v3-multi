@@ -7,7 +7,6 @@
 """UAV Fleet Tracking Environment — OpenEnv package."""
 
 from .client import UavEnv
-# FIX: was importing UavAction, UavObservation (wrong capitalisation)
 from .models import UAVAction, UAVObservation
 
 __all__ = [

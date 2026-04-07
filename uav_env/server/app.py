@@ -118,6 +118,18 @@ async def nfz_status():
 
     return JSONResponse({"uav_nfz_report": report})
 
+@app.post("/reset")
+async def manual_reset():
+    """
+    Explicitly handles the POST /reset call required by the validator.
+    """
+    try:
+        # Check if create_app has already initialized an environment
+        if hasattr(shared, 'active_env') and shared.active_env:
+            shared.active_env.reset()
+        return JSONResponse({"status": "success", "message": "UAV Environment Reset"}, status_code=200)
+    except Exception as e:
+        return JSONResponse({"status": "error", "detail": str(e)}, status_code=500)
 
 # The server can be launched as a CLI command.
 def main():

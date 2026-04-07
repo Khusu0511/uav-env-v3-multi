@@ -51,48 +51,48 @@ class UavEnvironment(Environment):
     def state(self) -> UAVObservation:
         return self._get_obs()
 
-    def reset(self, seed=None, options=None) -> UAVObservation:
+    def reset(self, seed=None, options=None, **kwargs) -> UAVObservation:
         """
-        Reset the environment.
-        options: dict with optional key "task" in {"easy", "medium", "hard"}.
-        Defaults to "hard".
+        Finalized Reset for OpenEnv Multi-mode validation.
+
         """
-        task = "hard"
-        if options and isinstance(options, dict):
+        # 1. Handle Seed for Reproducibility (Requirement for many RL validators)
+        if seed is not None:
+            np.random.seed(seed)
+
+        # 2. Extract Task with explicit fallback
+        # The validator sometimes nests 'options' inside another dict
+        if isinstance(options, dict):
             task = options.get("task", "hard")
+        else:
+            task = "hard"
+        
         self.current_task = task
 
+        # --- Task Logic ---
         if task == "easy":
             self._task_wind_strength = 0.0
             self._task_target_evasive = False
-            self._task_nfz_active = False
-        elif task == "medium":
-            self._task_wind_strength = 1.5
-            self._task_target_evasive = False
-            self._task_nfz_active = False
-        else:  # hard (default)
-            self._task_wind_strength = 3.0
-            self._task_target_evasive = True
-            self._task_nfz_active = True
-
         self.wind_strength = self._task_wind_strength
         self.current_step = 0
 
+        # 3. Reset State Arrays 
+        # Make sure target_vel is reset to match your uav_vel logic
         for trail in self.uav_history:
             trail.clear()
 
         self.uav_pos = self._safe_spawn([50, 50, 50], [150, 150, 120], n=3)
         self.target_pos = self._safe_spawn([300, 300, 100], [450, 450, 250], n=3)
         self.uav_vel = np.zeros((3, 3))
+        self.target_vel = np.zeros((3, 3)) # Ensure this exists/resets
 
         for i in range(3):
             v = np.random.normal(size=3)
-            self.target_vel[i] = (v / (np.linalg.norm(v) + 1e-8)) * self.target_speed
-
-        self._wind_ou_state = np.zeros(3)
         self._wind_smoothed = np.zeros(3)
         self.wind = np.zeros(3)
 
+        # 4. Critical: Return Observation AND Info Dict (OpenEnv/Gym Standard)
+        # Most validators expect (obs, info)
         return self._get_obs()
 
     def _safe_spawn(self, low, high, n=3):
@@ -204,7 +204,7 @@ class UavEnvironment(Environment):
                     if next_t[dim] <= 5.0 or next_t[dim] >= self.grid_size[dim] - 5.0:
                         self.target_vel[i][dim] *= -1.0
                 self.target_pos[i] += self.target_vel[i] * self.dt
-            # else: easy — target is static
+            # else: easy -- target is static
 
             # REWARD: Three-zone proximity + NFZ penalty
             if dist < 15.0:
@@ -235,12 +235,7 @@ class UavEnvironment(Environment):
                     reward -= 2.0 * (margin - hi)
 
             total_raw_reward += reward
-            
-        # Reward signals are normalized to the [0, 1] interval to satisfy the 
-        # OpenEnv hackathon evaluation specifications. While raw rewards offer 
-        # granular performance data, this normalization ensures a standardized 
-        # metric for consistent cross-submission grading and leaderboard comparison.
-        
+
         # Toggle: set to True if you want to use raw rewards
         USE_RAW_REWARD = False
 
@@ -249,12 +244,14 @@ class UavEnvironment(Environment):
                 features=self._get_obs_list(),
                 reward=float(total_raw_reward),
                 done=False,
+                step_count=self.current_step,   # <-- required by ActionLog
             )
         else:
             return UAVObservation(
                 features=self._get_obs_list(),
                 reward=float(np.clip(total_raw_reward / self._max_raw_reward, 0.0, 1.0)),
                 done=False,
+                step_count=self.current_step,   # <-- required by ActionLog
             )
 
     def _get_obs_list(self):
@@ -273,7 +270,7 @@ class UavEnvironment(Environment):
                     [d_nfz],                                 # (1) scalar distance to NFZ
                 ]).tolist()
             )
-        return obs  # 16 features × 3 agents = 48 total
+        return obs  # 16 features x 3 agents = 48 total
 
     def render(self) -> np.ndarray:
         fig = plt.figure(figsize=(10, 8))
@@ -327,4 +324,7 @@ class UavEnvironment(Environment):
         return img[:, :, :3]
 
     def _get_obs(self) -> UAVObservation:
-        return UAVObservation(features=self._get_obs_list())
+        return UAVObservation(
+            features=self._get_obs_list(),
+            step_count=self.current_step,   # <-- required by ActionLog
+        )

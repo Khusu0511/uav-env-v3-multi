@@ -14,8 +14,6 @@ version = "0.1.0"
 description = "Multi-UAV Fleet Tracking environment for OpenEnv — Meta x PyTorch Hackathon"
 requires-python = ">=3.10"
 
-# FIX: removed [core] extra — that extra does not exist in openenv-core
-# and causes pip install warnings / failures inside Docker.
 dependencies = [
     "openenv-core>=0.2.2",
     "numpy>=1.24.0",
@@ -30,8 +28,9 @@ dev = [
     "pytest-cov>=4.0.0",
 ]
 
-# FIX: removed broken script entry "uav_env.server.app:main"
-# (no main() existed in server/app.py — that reference crashed on invocation).
+[project.scripts]
+server = "server.app:main"
+
 # The server is started directly by the Dockerfile CMD via uvicorn.
 
 [tool.setuptools]
