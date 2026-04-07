@@ -118,20 +118,39 @@ async def nfz_status():
 
     return JSONResponse({"uav_nfz_report": report})
 
+from fastapi import Request # Make sure this is at the very top of your app.py file!
+
 @app.post("/reset")
-async def manual_reset():
+async def manual_reset(request: Request):
     """
-    Explicitly handles the POST /reset call required by the validator.
+    Explicitly handles the POST /reset call and passes the options
+    to the UAV environment so difficulty levels actually change.
     """
     try:
-        # Check if create_app has already initialized an environment
+        # 1. Safely try to read the incoming JSON data from the UI or Validator
+        try:
+            body = await request.json()
+        except:
+            body = {} # If no JSON was sent, use an empty dictionary
+
+        # 2. Extract the "options" object
+        options = body.get("options", {})
+
+        # 3. Pass those options directly into the environment's reset function
         if hasattr(shared, 'active_env') and shared.active_env:
-            shared.active_env.reset()
-        return JSONResponse({"status": "success", "message": "UAV Environment Reset"}, status_code=200)
+            shared.active_env.reset(options=options) # <-- This is the magic link!
+            
+        return JSONResponse({
+            "status": "success", 
+            "message": "UAV Environment Reset",
+            "task_applied": options.get("task", "hard") # The "receipt" we talked about
+        }, status_code=200)
+
     except Exception as e:
         return JSONResponse({"status": "error", "detail": str(e)}, status_code=500)
-
+    
 # The server can be launched as a CLI command.
+
 def main():
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)
