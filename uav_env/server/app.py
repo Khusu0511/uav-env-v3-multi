@@ -18,17 +18,13 @@ from server.uav_env_environment import UavEnvironment
 
 # ---------------------------------------------------------------------------
 # Create the OpenEnv FastAPI app
-# env_name must match the benchmark name used in your inference script.
-# Updated to v3 to reflect:
-#   - Strict NFZ hard-wall enforcement
-#   - 3D evasive target movement
-#   - Observation size: 48 (16 features × 3 agents, added scalar d_nfz)
+# env_name must match the name used in inference.py log_start() calls.
 # ---------------------------------------------------------------------------
 app = create_app(
     UavEnvironment,
     UAVAction,
     UAVObservation,
-    env_name="uav_env_v3_multi",   # bumped from v2 → v3 (obs shape changed)
+    env_name="uav_env_v3_multi",
     max_concurrent_envs=1,
 )
 
@@ -38,10 +34,10 @@ async def get_frame():
     """
     Returns the current 3D fleet frame as a PNG.
     Visualises:
-    - 3 UAV-Target pairs (unique colours + labels)
-    - Curved trajectory trails
-    - Red NFZ hard-boundary sphere + orange buffer sphere wireframes
-    - External legend
+      - 3 UAV-Target pairs (unique colours + labels)
+      - Curved trajectory trails
+      - Red NFZ hard-boundary sphere + orange buffer sphere wireframes
+      - Wind indicator arrow
     """
     try:
         env = shared.active_env
@@ -78,8 +74,9 @@ async def health():
         env_status = "Active"
         details = {
             "step": int(env.current_step),
+            "task": env.current_task,
             "num_agents": env.num_agents,
-            "obs_size": 48,            # 16 features × 3 agents
+            "obs_size": 48,
             "nfz_count": len(env.nfz_centers),
             "nfz_hard_radius": env.nfz_hard_radius,
             "nfz_buffer_radius": env.nfz_buffer_radius,
@@ -93,7 +90,7 @@ async def health():
 async def nfz_status():
     """
     Returns per-UAV NFZ compliance status.
-    Useful for debugging and for your inference script to log violations.
+    Used by inference.py to count hard violations every 10 steps.
     """
     env = shared.active_env
     if env is None:
@@ -110,9 +107,7 @@ async def nfz_status():
                 "distance_to_center": round(d, 2),
                 "hard_radius": env.nfz_hard_radius,
                 "buffer_radius": env.nfz_buffer_radius,
-                # True = UAV is inside the hard exclusion zone (should never happen)
                 "hard_violation": d < env.nfz_hard_radius,
-                # True = UAV is in the warning buffer zone
                 "buffer_warning": d < env.nfz_buffer_radius,
             })
         report.append({
@@ -122,3 +117,13 @@ async def nfz_status():
         })
 
     return JSONResponse({"uav_nfz_report": report})
+
+
+# The server can be launched as a CLI command.
+def main():
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000)
+
+
+if __name__ == "__main__":
+    main()

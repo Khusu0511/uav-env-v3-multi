@@ -5,3 +5,4 @@ numpy
 matplotlib
 imageio
 Pillow
+openenv-core>=0.2.2

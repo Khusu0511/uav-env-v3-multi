@@ -4,13 +4,14 @@
 # This source code is licensed under the BSD-style license found in the
 # LICENSE file in the root directory of this source tree.
 
-"""Uav Env Environment."""
+"""UAV Fleet Tracking Environment — OpenEnv package."""
 
 from .client import UavEnv
-from .models import UavAction, UavObservation
+# FIX: was importing UavAction, UavObservation (wrong capitalisation)
+from .models import UAVAction, UAVObservation
 
 __all__ = [
-    "UavAction",
-    "UavObservation",
+    "UAVAction",
+    "UAVObservation",
     "UavEnv",
 ]

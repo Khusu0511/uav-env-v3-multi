@@ -27,7 +27,6 @@ import sys
 import json
 import time
 import textwrap
-import asyncio
 import requests
 import numpy as np
 
@@ -50,8 +49,9 @@ HF_TOKEN     = os.getenv("HF_TOKEN",     "")
 ENV_URL           = os.getenv("ENV_URL", "http://localhost:8000")
 MAX_STEPS         = 150     # safe under 20 min on 2 vCPU / 8 GB
 LLM_CALL_EVERY    = 25      # call LLM every N steps; rule-based fills the rest
-SUCCESS_THRESHOLD = 0.25    # normalised reward (0–1) to mark run successful
+SUCCESS_THRESHOLD = 0.35    # normalised reward (0–1) to mark run successful
 
+NFZ_ACTIVE_TASKS = {"hard"}
 OBS_PER_AGENT = 16
 NUM_AGENTS    = 3
 _SAFE_ACTION  = [0.0] * (NUM_AGENTS * 3)
@@ -59,7 +59,7 @@ _SAFE_ACTION  = [0.0] * (NUM_AGENTS * 3)
 # ---------------------------------------------------------------------------
 # OPENAI CLIENT (hackathon mandates OpenAI client for all LLM calls)
 # ---------------------------------------------------------------------------
-def build_openai_client() -> OpenAI | None:
+def build_openai_client():
     if not HF_TOKEN:
         print("[INFO] HF_TOKEN not set — LLM disabled, running rule-based only.")
         return None
@@ -143,15 +143,17 @@ def rule_based_action(features: list) -> list:
         # P1: Boundary repulsion
         boundary = np.zeros(3)
         for dim in range(3):
-            if uav_vel[dim] > 4.0:  boundary[dim] -= 0.4
-            elif uav_vel[dim] < -4.0: boundary[dim] += 0.4
+            if uav_vel[dim] > 4.0:
+                boundary[dim] -= 0.4
+            elif uav_vel[dim] < -4.0:
+                boundary[dim] += 0.4
 
         # P2: NFZ avoidance
         if d_nfz < 85.0:
-            nfz_n = np.linalg.norm(nfz_vec)
-            flee  = -nfz_vec / (nfz_n + 1e-8)
+            nfz_n   = np.linalg.norm(nfz_vec)
+            flee    = -nfz_vec / (nfz_n + 1e-8)
             urgency = 1.0 - (d_nfz / 85.0)
-            cmd = flee * (0.6 + 0.4 * urgency) + boundary
+            cmd     = flee * (0.6 + 0.4 * urgency) + boundary
             action.extend(np.clip(cmd, -1.0, 1.0).tolist())
             continue
 
@@ -168,7 +170,7 @@ def rule_based_action(features: list) -> list:
         urgency   = float(np.clip(dist / 60.0, 0.3, 1.0))
         wind_n    = np.linalg.norm(wind)
         wind_comp = (-wind / (wind_n + 1e-8)) * min(wind_n / 8.0, 0.25)
-        cmd = intercept * urgency + wind_comp + boundary
+        cmd       = intercept * urgency + wind_comp + boundary
         action.extend(np.clip(cmd, -1.0, 1.0).tolist())
 
     return action
@@ -221,7 +223,10 @@ def wait_for_env(timeout: int = 30) -> bool:
     return False
 
 
-def check_nfz_violations() -> int:
+def check_nfz_violations(task: str) -> int:
+    if task not in NFZ_ACTIVE_TASKS:
+        return 0   # NFZ disabled for easy/medium — ignore ghost violations
+
     violations = 0
     try:
         r = requests.get(f"{ENV_URL}/nfz_status", timeout=2)
@@ -235,7 +240,7 @@ def check_nfz_violations() -> int:
     return violations
 
 
-def fetch_frame() -> bytes | None:
+def fetch_frame():
     try:
         r = requests.get(f"{ENV_URL}/render", timeout=3)
         return r.content if r.status_code == 200 else None
@@ -261,12 +266,12 @@ def log_start(env_name: str, task: str, max_steps: int, model: str):
 def log_step(step: int, action: list, reward: float, done: bool,
              action_source: str, nfz_violations: int):
     payload = {
-        "step":            step,
-        "action":          [round(v, 4) for v in action],
-        "reward":          round(float(reward), 4),
-        "done":            done,
-        "action_source":   action_source,   # "llm" | "rule" | "safe"
-        "nfz_violations":  nfz_violations,
+        "step":           step,
+        "action":         [round(v, 4) for v in action],
+        "reward":         round(float(reward), 4),
+        "done":           done,
+        "action_source":  action_source,   # "llm" | "rule" | "safe"
+        "nfz_violations": nfz_violations,
     }
     print(f"[STEP] {json.dumps(payload)}", flush=True)
 
@@ -290,14 +295,17 @@ def log_end(total_steps: int, avg_reward: float, success: bool,
 # ---------------------------------------------------------------------------
 def run_task(env_client, llm_client, task: str, env_name: str):
     """Run one full episode for a given task. Returns (avg_reward, nfz_total)."""
-    rewards    = []
-    nfz_total  = 0
-    llm_ok     = 0
-    llm_fail   = 0
-    frames     = []
+    rewards      = []
+    nfz_total    = 0
+    llm_ok       = 0
+    llm_fail     = 0
+    frames       = []
     llm_disabled = llm_client is None
 
-    task_label = f"Multi-UAV pursuit [{task}]: intercept targets while avoiding NFZ and boundaries"
+    task_label = (
+        f"Multi-UAV pursuit [{task}]: "
+        f"intercept targets while avoiding NFZ and boundaries"
+    )
 
     log_start(
         env_name  = env_name,
@@ -306,20 +314,27 @@ def run_task(env_client, llm_client, task: str, env_name: str):
         model     = MODEL_NAME if not llm_disabled else "rule_based",
     )
 
-    # Reset with task option
-    res = env_client.reset(options={"task": task})
-    wait_for_env(timeout=30)
-
     try:
+        # Reset with task option — inside try so [END] is always emitted
+        res = env_client.reset(options={"task": task})
+        wait_for_env(timeout=30)
+
         for step in range(1, MAX_STEPS + 1):
             features  = get_features(res)
             obs_valid = len(features) == OBS_PER_AGENT * NUM_AGENTS
 
+            # Mask NFZ data on easy/medium tasks so neither LLM nor
+            # rule-based logic tries to flee a non-existent NFZ.
+            if obs_valid and task not in NFZ_ACTIVE_TASKS:
+                for i in range(NUM_AGENTS):
+                    features[i * OBS_PER_AGENT + 15] = 999.0
+
             action_source = "safe"
-            exec_action   = _SAFE_ACTION
+            exec_action   = _SAFE_ACTION[:]
 
             if obs_valid:
                 llm_action = None
+
                 if not llm_disabled and (step == 1 or step % LLM_CALL_EVERY == 0):
                     try:
                         raw        = query_llm(llm_client, f"Step {step}:\n{format_obs(features)}")
@@ -348,7 +363,7 @@ def run_task(env_client, llm_client, task: str, env_name: str):
             # NFZ check every 10 steps
             step_nfz = 0
             if step % 10 == 0:
-                step_nfz  = check_nfz_violations()
+                step_nfz  = check_nfz_violations(task)
                 nfz_total += step_nfz
 
             log_step(
@@ -369,6 +384,10 @@ def run_task(env_client, llm_client, task: str, env_name: str):
                     except Exception:
                         pass
 
+            # Early exit if episode is done
+            if bool(getattr(res, "done", False)):
+                break
+
     except Exception as e:
         print(f"[ERROR] Task '{task}' aborted: {e}", file=sys.stderr, flush=True)
 
@@ -376,10 +395,15 @@ def run_task(env_client, llm_client, task: str, env_name: str):
         # Save per-task video
         if IMAGEIO_AVAILABLE and frames:
             try:
-                imageio.mimsave(f"submission_video_{task}.mp4", frames, fps=15, macro_block_size=1)
+                imageio.mimsave(
+                    f"submission_video_{task}.mp4", frames,
+                    fps=15, macro_block_size=1
+                )
             except Exception:
                 try:
-                    imageio.mimsave(f"submission_video_{task}.gif", frames, fps=15)
+                    imageio.mimsave(
+                        f"submission_video_{task}.gif", frames, fps=15
+                    )
                 except Exception:
                     pass
 
@@ -402,26 +426,34 @@ def run_task(env_client, llm_client, task: str, env_name: str):
 # ---------------------------------------------------------------------------
 # MAIN — runs easy → medium → hard in sequence
 # ---------------------------------------------------------------------------
-async def main():
+def main():
     llm_client = build_openai_client()
-    env_client = GenericEnvClient(base_url=ENV_URL).sync()
-
-    env_name = "uav_env_v3_multi"
-    tasks    = ["easy", "medium", "hard"]
+    env_name   = "uav_env_v3_multi"
+    tasks      = ["easy", "medium", "hard"]
 
     wait_for_env(timeout=60)
 
     all_results = {}
-    for task in tasks:
-        avg_reward, nfz_total = run_task(env_client, llm_client, task, env_name)
-        all_results[task] = {"avg_reward": avg_reward, "nfz_violations": nfz_total}
-        time.sleep(1.0)   # brief pause between tasks
+
+    # Use context manager to ensure clean connection lifecycle
+    with GenericEnvClient(base_url=ENV_URL).sync() as env_client:
+        for task in tasks:
+            avg_reward, nfz_total = run_task(env_client, llm_client, task, env_name)
+            all_results[task] = {
+                "avg_reward":     avg_reward,
+                "nfz_violations": nfz_total,
+            }
+            time.sleep(1.0)   # brief pause between tasks
 
     # Final summary to stderr (not part of grader log)
     print("\n[SUMMARY]", file=sys.stderr)
     for task, r in all_results.items():
-        print(f"  {task:6s} | avg_reward={r['avg_reward']:.4f} | nfz_violations={r['nfz_violations']}", file=sys.stderr)
+        print(
+            f"  {task:6s} | avg_reward={r['avg_reward']:.4f}"
+            f" | nfz_violations={r['nfz_violations']}",
+            file=sys.stderr,
+        )
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()

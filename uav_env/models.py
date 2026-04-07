@@ -16,13 +16,16 @@ class UAVObservation(Observation):
     48D feature vector: 16 features × 3 agents.
 
     Per-agent block (16 values):
-      [0:3]   rel_pos  — target_pos - uav_pos (metres)
-      [3:6]   rel_vel  — target_vel - uav_vel (m/s)
-      [6:9]   uav_vel  — own velocity (m/s)
-      [9:12]  wind     — wind vector (m/s)
-      [12:15] nfz_vec  — vector to nearest NFZ center (metres)
-      [15]    d_nfz    — scalar distance to NFZ surface (metres)
+      [0:3]  rel_pos  — target_pos - uav_pos (metres)
+      [3:6]  rel_vel  — target_vel - uav_vel (m/s)
+      [6:9]  uav_vel  — own velocity (m/s)
+      [9:12] wind     — wind vector (m/s)
+      [12:15] nfz_vec — vector to nearest NFZ center (metres)
+      [15]   d_nfz   — scalar distance to NFZ surface (metres)
 
-    Reward returned by step() is always normalised to [0.0, 1.0].
+    reward: raw step reward (sum across 3 agents, unclipped).
+    done:   always False — episodes are time-limited by MAX_STEPS.
     """
     features: List[float] = Field(..., min_length=48, max_length=48)
+    reward: float = 0.0
+    done: bool = False

@@ -1,3 +1,13 @@
+---
+title: UAV Env v3 Multi
+emoji: 🚁
+colorFrom: blue
+colorTo: indigo
+sdk: docker
+app_port: 8000
+pinned: false
+---
+
 # UAV Fleet Tracking Environment — `uav_env_v3_multi`
 
 > **Meta × PyTorch OpenEnv Hackathon** submission  
@@ -99,7 +109,27 @@ action = UAVAction(commands=[0.5, -0.3, 0.1,  0.0, 0.8, -0.2,  -0.4, 0.1, 0.6])
 
 ## Reward Function
 
-Rewards are returned per step, normalized to `[0.0, 1.0]` across all 3 UAVs.
+Rewards are returned per step, normalized to [0.0, 1.0] across all 3 UAVs to ensure standardized metric tracking for hackathon evaluation.
+
+## ⚠️ Important Note on Performance Evaluation
+
+Reward signals are normalized to the range **[0, 1]** to comply with competition requirements and ensure consistent leaderboard comparisons. However, normalization can sometimes obscure subtle yet meaningful performance differences between agents.
+
+To maintain flexibility, this project provides a **toggle-based mechanism** to switch between normalized and raw reward signals.
+
+**Key Points:**
+* By default, rewards are **normalized** for standard evaluation and submission.
+* You can enable raw rewards by setting:
+
+  ```python
+  # in uav_env_environment.py
+  USE_RAW_REWARD = True
+  ```
+
+* Raw rewards provide **more granular insights** for debugging, analysis, and research.
+* Normalized rewards ensure **fair and consistent benchmarking** across different submissions.
+
+> ⚡ For deeper analysis and development, consider using raw rewards, but switch back to normalized rewards for official evaluation.
 
 | Condition | Raw Reward (per UAV) |
 | --- | --- |

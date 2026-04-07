@@ -1,5 +1,8 @@
 spec_version: 1
 name: uav_env_v3_multi
+version: "0.1.0"
+author: "FullmetalDevs"
+description: "Multi-UAV 3D fleet pursuit with evasive targets, stochastic OU wind, and hard NFZ enforcement. Built with OpenEnv for the Meta x PyTorch Hackathon."
 type: space
 runtime: fastapi
 app: server.app:app
@@ -9,8 +12,8 @@ tasks:
     description: "3 UAVs, static targets, no wind, no NFZ"
     difficulty: easy
   - id: medium
-    description: "3 UAVs, random-walk targets, light wind, no NFZ"
+    description: "3 UAVs, random-walk targets, light wind (1.5 m/s), no NFZ"
     difficulty: medium
   - id: hard
-    description: "3 UAVs, evasive targets, full OU wind, NFZ active"
+    description: "3 UAVs, evasive targets, full OU wind (3 m/s), NFZ active"
     difficulty: hard

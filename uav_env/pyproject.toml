@@ -3,21 +3,21 @@
 #
 # This source code is licensed under the BSD-style license found in the
 # LICENSE file in the root directory of this source tree.
+
 [build-system]
 requires = ["setuptools>=45", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "openenv-uav_env"
+name = "openenv-uav-env"
 version = "0.1.0"
-description = "Uav Env environment for OpenEnv"
+description = "Multi-UAV Fleet Tracking environment for OpenEnv — Meta x PyTorch Hackathon"
 requires-python = ">=3.10"
 
-# --- CORE DEPENDENCIES ---
-# Added numpy for physics, matplotlib/Pillow for 3D rendering, 
-# and imageio for video generation
+# FIX: removed [core] extra — that extra does not exist in openenv-core
+# and causes pip install warnings / failures inside Docker.
 dependencies = [
-    "openenv-core[core]>=0.2.2",
+    "openenv-core>=0.2.2",
     "numpy>=1.24.0",
     "matplotlib>=3.7.0",
     "imageio>=2.31.0",
@@ -30,9 +30,9 @@ dev = [
     "pytest-cov>=4.0.0",
 ]
 
-[project.scripts]
-# Server entry point
-server = "uav_env.server.app:main"
+# FIX: removed broken script entry "uav_env.server.app:main"
+# (no main() existed in server/app.py — that reference crashed on invocation).
+# The server is started directly by the Dockerfile CMD via uvicorn.
 
 [tool.setuptools]
 include-package-data = true

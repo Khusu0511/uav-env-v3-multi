@@ -4,7 +4,7 @@
 # This source code is licensed under the BSD-style license found in the
 # LICENSE file in the root directory of this source tree.
 
-"""Uav Env Environment Client."""
+"""UAV Fleet Tracking Environment Client."""
 
 from typing import Dict
 
@@ -12,86 +12,73 @@ from openenv.core import EnvClient
 from openenv.core.client_types import StepResult
 from openenv.core.env_server.types import State
 
-from .models import UavAction, UavObservation
+# FIX: correct capitalisation — was UavAction, UavObservation
+from .models import UAVAction, UAVObservation
 
 
 class UavEnv(
-    EnvClient[UavAction, UavObservation, State]
+    EnvClient[UAVAction, UAVObservation, State]
 ):
     """
-    Client for the Uav Env Environment.
+    Client for the UAV Fleet Tracking Environment.
 
-    This client maintains a persistent WebSocket connection to the environment server,
+    Maintains a persistent WebSocket connection to the environment server,
     enabling efficient multi-step interactions with lower latency.
     Each client instance has its own dedicated environment session on the server.
 
-    Example:
-        >>> # Connect to a running server
-        >>> with UavEnv(base_url="http://localhost:8000") as client:
-        ...     result = client.reset()
-        ...     print(result.observation.echoed_message)
-        ...
-        ...     result = client.step(UavAction(message="Hello!"))
-        ...     print(result.observation.echoed_message)
+    Example (sync):
+        with UavEnv(base_url="http://localhost:8000").sync() as client:
+            result = client.reset()
+            print(result.observation.features[:3])   # rel_pos of UAV 1
 
-    Example with Docker:
-        >>> # Automatically start container and connect
-        >>> client = UavEnv.from_docker_image("uav_env-env:latest")
-        >>> try:
-        ...     result = client.reset()
-        ...     result = client.step(UavAction(message="Test"))
-        ... finally:
-        ...     client.close()
+            action = UAVAction(commands=[0.5, -0.3, 0.1,
+                                         0.0,  0.8, -0.2,
+                                        -0.4,  0.1,  0.6])
+            result = client.step(action)
+            print(result.reward)
+
+    Example (async):
+        async with UavEnv(base_url="http://localhost:8000") as client:
+            result = await client.reset()
+            result = await client.step(UAVAction(commands=[0.0]*9))
     """
 
-    def _step_payload(self, action: UavAction) -> Dict:
+    def _step_payload(self, action: UAVAction) -> Dict:
         """
-        Convert UavAction to JSON payload for step message.
+        Convert UAVAction to JSON payload for the /step WebSocket message.
 
-        Args:
-            action: UavAction instance
-
-        Returns:
-            Dictionary representation suitable for JSON encoding
+        FIX: was sending {"message": action.message} (Echo env template).
+             UAVAction has no 'message' field — it has 'commands'.
         """
         return {
-            "message": action.message,
+            "commands": action.commands,
         }
 
-    def _parse_result(self, payload: Dict) -> StepResult[UavObservation]:
+    def _parse_result(self, payload: Dict) -> StepResult[UAVObservation]:
         """
-        Parse server response into StepResult[UavObservation].
+        Parse server response into StepResult[UAVObservation].
 
-        Args:
-            payload: JSON response data from server
-
-        Returns:
-            StepResult with UavObservation
+        FIX: was building UAVObservation with Echo env fields
+             (echoed_message, message_length, metadata) — none of which
+             exist on UAVObservation. Now correctly reads 'features'.
         """
         obs_data = payload.get("observation", {})
-        observation = UavObservation(
-            echoed_message=obs_data.get("echoed_message", ""),
-            message_length=obs_data.get("message_length", 0),
-            done=payload.get("done", False),
-            reward=payload.get("reward"),
-            metadata=obs_data.get("metadata", {}),
+
+        observation = UAVObservation(
+            features=obs_data.get("features", [0.0] * 48),
+            reward=float(payload.get("reward", 0.0)),
+            done=bool(payload.get("done", False)),
         )
 
         return StepResult(
             observation=observation,
-            reward=payload.get("reward"),
-            done=payload.get("done", False),
+            reward=float(payload.get("reward", 0.0)),
+            done=bool(payload.get("done", False)),
         )
 
     def _parse_state(self, payload: Dict) -> State:
         """
         Parse server response into State object.
-
-        Args:
-            payload: JSON response from state request
-
-        Returns:
-            State object with episode_id and step_count
         """
         return State(
             episode_id=payload.get("episode_id"),
