@@ -43,7 +43,7 @@ class UavEnvironment(Environment):
         self.current_step = 0
 
         self._max_raw_reward = 480.0
-        self.last_reward = 0.0
+        self.last_reward = 1e-5
         self._cached_obs = None
 
         shared.active_env = self
@@ -75,7 +75,7 @@ class UavEnvironment(Environment):
 
         self.wind_strength = self._task_wind_strength
         self.current_step = 0
-        self.last_reward = 0.0
+        self.last_reward = 1e-5
 
         self._wind_ou_state = np.zeros(3)
         self._wind_smoothed = np.zeros(3)
@@ -95,7 +95,7 @@ class UavEnvironment(Environment):
         self._cached_obs = None
         obs = UAVObservation(
             features=self._get_obs_list(),
-            reward=0.0,
+            reward=1e-5,
             done=False,
             step_count=self.current_step,
             episode_id="uav_episode",
@@ -135,7 +135,7 @@ class UavEnvironment(Environment):
             self.wind = np.zeros(3)
 
         cmds = np.array(action.commands).reshape((3, 3))
-        total_raw_reward = 0.0
+        total_raw_reward = 1e-5
 
         for i in range(3):
             dist = np.linalg.norm(self.target_pos[i] - self.uav_pos[i])
@@ -170,7 +170,7 @@ class UavEnvironment(Environment):
                         inward = min(0.0, np.dot(self.uav_vel[i], normal))
                         self.uav_vel[i] -= inward * normal
 
-            # FIX: bounce off walls instead of sticking — prevents UAVs
+            # Use to bounce off walls instead of sticking — prevents UAVs
             # freezing at boundary making features/reward permanently static
             for dim in range(3):
                 if next_pos[dim] <= 0.0:
@@ -244,7 +244,9 @@ class UavEnvironment(Environment):
             total_raw_reward += reward
 
         USE_RAW_REWARD = False
-        normalised = float(np.clip(total_raw_reward / self._max_raw_reward, 0.0, 1.0))
+        
+        # Added epsilon buffer to ensure score is strictly within (0, 1)
+        normalised = float(np.clip(total_raw_reward / self._max_raw_reward, 1e-5, 0.99999))
         raw = float(total_raw_reward)
 
         self.last_reward = raw if USE_RAW_REWARD else normalised
@@ -255,7 +257,7 @@ class UavEnvironment(Environment):
             done=False,
             episode_id="uav_episode",
             step_count=self.current_step,
-            metadata=self._build_metadata(), # <--- ADDED
+            metadata=self._build_metadata(),
         )
         self._cached_obs = obs
         return obs
