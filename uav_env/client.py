@@ -7,6 +7,7 @@
 """UAV Fleet Tracking Environment Client."""
 
 from typing import Dict
+import numpy as np
 
 from openenv.core import EnvClient
 from openenv.core.client_types import StepResult
