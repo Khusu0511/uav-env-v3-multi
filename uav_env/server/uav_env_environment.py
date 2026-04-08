@@ -18,7 +18,6 @@ class UavEnvironment(Environment):
         self.target_speed = 6.0
         self.dt = 0.5
 
-        # Wind (OU Process)
         self.wind_strength = 3.0
         self.wind_smooth_alpha = 0.92
         self._wind_ou_state = np.zeros(3)
@@ -43,32 +42,24 @@ class UavEnvironment(Environment):
         self._task_nfz_active = True
         self.current_step = 0
 
-        self.last_reward = 0.0
         self._max_raw_reward = 480.0
+        self.last_reward = 0.0
+        self._cached_obs = None
 
         shared.active_env = self
 
     @property
     def state(self) -> UAVObservation:
+        if self._cached_obs is not None:
+            return self._cached_obs
         return self._get_obs()
 
-    def reset(self, seed=None, options=None, **kwargs) -> UAVObservation:
-        """
-        Finalized Reset for OpenEnv Multi-mode validation.
-        """
-        # 1. Handle Seed for Reproducibility
-        if seed is not None:
-            np.random.seed(seed)
-
-        # 2. Extract Task with explicit fallback
-        if isinstance(options, dict):
+    def reset(self, seed=None, options=None) -> UAVObservation:
+        task = "hard"
+        if options and isinstance(options, dict):
             task = options.get("task", "hard")
-        else:
-            task = "hard"
-        
         self.current_task = task
 
-        # --- Task Logic ---
         if task == "easy":
             self._task_wind_strength = 0.0
             self._task_target_evasive = False
@@ -77,37 +68,43 @@ class UavEnvironment(Environment):
             self._task_wind_strength = 1.5
             self._task_target_evasive = False
             self._task_nfz_active = False
-        else:  # hard (default)
+        else:
             self._task_wind_strength = 3.0
             self._task_target_evasive = True
             self._task_nfz_active = True
 
         self.wind_strength = self._task_wind_strength
         self.current_step = 0
-        
-        self.last_reward = 0.0 
+        self.last_reward = 0.0
 
-        # 3. Reset State Arrays 
+        self._wind_ou_state = np.zeros(3)
+        self._wind_smoothed = np.zeros(3)
+        self.wind = np.zeros(3)
+
         for trail in self.uav_history:
             trail.clear()
 
         self.uav_pos = self._safe_spawn([50, 50, 50], [150, 150, 120], n=3)
         self.target_pos = self._safe_spawn([300, 300, 100], [450, 450, 250], n=3)
         self.uav_vel = np.zeros((3, 3))
-        self.target_vel = np.zeros((3, 3))
 
         for i in range(3):
             v = np.random.normal(size=3)
             self.target_vel[i] = (v / (np.linalg.norm(v) + 1e-8)) * self.target_speed
 
-        self._wind_ou_state = np.zeros(3)
-        self._wind_smoothed = np.zeros(3)
-        self.wind = np.zeros(3)
-
-        return self._get_obs()
+        self._cached_obs = None
+        obs = UAVObservation(
+            features=self._get_obs_list(),
+            reward=0.0,
+            done=False,
+            step_count=self.current_step,
+            episode_id="uav_episode",
+            metadata=self._build_metadata(), # <--- ADDED
+        )
+        self._cached_obs = obs
+        return obs
 
     def _safe_spawn(self, low, high, n=3):
-        """Spawn n positions guaranteed to be outside all NFZ hard radii."""
         positions = []
         for _ in range(n):
             for attempt in range(200):
@@ -126,7 +123,6 @@ class UavEnvironment(Environment):
     def step(self, action: UAVAction) -> UAVObservation:
         self.current_step += 1
 
-        # OU Wind Update
         if self.wind_strength > 0.0:
             noise = np.random.normal(size=3)
             self._wind_ou_state = 0.9 * self._wind_ou_state + 0.5 * noise
@@ -144,12 +140,10 @@ class UavEnvironment(Environment):
         for i in range(3):
             dist = np.linalg.norm(self.target_pos[i] - self.uav_pos[i])
 
-            # Smooth inertia
             inertia = 0.45 + 0.40 * np.tanh(dist / 30.0)
             desired_vel = cmds[i] * self.cmd_scale
             self.uav_vel[i] = inertia * self.uav_vel[i] + (1.0 - inertia) * desired_vel
 
-            # Soft NFZ repulsion (warning zone)
             if self._task_nfz_active:
                 for center in self.nfz_centers:
                     vec = self.uav_pos[i] - center
@@ -158,15 +152,12 @@ class UavEnvironment(Environment):
                         strength = self.max_speed * 1.5 * (1.0 - d / self.nfz_buffer_radius) ** 2
                         self.uav_vel[i] += (vec / (d + 1e-8)) * strength
 
-            # Speed clamp
             speed = np.linalg.norm(self.uav_vel[i])
             if speed > self.max_speed:
                 self.uav_vel[i] = (self.uav_vel[i] / speed) * self.max_speed
 
-            # Tentative position update
             next_pos = self.uav_pos[i] + self.uav_vel[i] * self.dt + self.wind * self.dt * 0.3
 
-            # STRICT NFZ ENFORCEMENT: Hard boundary collision response
             nfz_violated = False
             if self._task_nfz_active:
                 for center in self.nfz_centers:
@@ -179,12 +170,19 @@ class UavEnvironment(Environment):
                         inward = min(0.0, np.dot(self.uav_vel[i], normal))
                         self.uav_vel[i] -= inward * normal
 
-            # Boundary clamp
-            next_pos = np.clip(next_pos, [0, 0, 0], self.grid_size)
+            # FIX: bounce off walls instead of sticking — prevents UAVs
+            # freezing at boundary making features/reward permanently static
+            for dim in range(3):
+                if next_pos[dim] <= 0.0:
+                    next_pos[dim] = 0.0
+                    self.uav_vel[i][dim] = abs(self.uav_vel[i][dim]) * 0.5
+                elif next_pos[dim] >= self.grid_size[dim]:
+                    next_pos[dim] = self.grid_size[dim]
+                    self.uav_vel[i][dim] = -abs(self.uav_vel[i][dim]) * 0.5
+
             self.uav_pos[i] = next_pos
             self.uav_history[i].append(self.uav_pos[i].copy())
 
-            # TARGET MOVEMENT
             if self._task_target_evasive:
                 flee_dir = self.target_pos[i] - self.uav_pos[i]
                 flee_dist = np.linalg.norm(flee_dir)
@@ -215,9 +213,7 @@ class UavEnvironment(Environment):
                     if next_t[dim] <= 5.0 or next_t[dim] >= self.grid_size[dim] - 5.0:
                         self.target_vel[i][dim] *= -1.0
                 self.target_pos[i] += self.target_vel[i] * self.dt
-            # else: easy -- target is static
 
-            # REWARD: Three-zone proximity + NFZ penalty
             if dist < 15.0:
                 v_err = np.linalg.norm(self.uav_vel[i] - self.target_vel[i])
                 reward = 100.0 + 60.0 * np.exp(-v_err / 5.0)
@@ -247,28 +243,22 @@ class UavEnvironment(Environment):
 
             total_raw_reward += reward
 
-        # Toggle: set to True if you want to use raw rewards
-        
-        raw_reward = float(total_raw_reward)
-        normalized_reward = float(np.clip(total_raw_reward / self._max_raw_reward, 0.0, 1.0))
         USE_RAW_REWARD = False
+        normalised = float(np.clip(total_raw_reward / self._max_raw_reward, 0.0, 1.0))
+        raw = float(total_raw_reward)
 
-        self.last_reward = raw_reward if USE_RAW_REWARD else normalized_reward
-        
-        if USE_RAW_REWARD:
-            return UAVObservation(
-                features=self._get_obs_list(),
-                reward=raw_reward,
-                done=False,
-                step_count=self.current_step,   # <-- required by ActionLog
-            )
-        else:
-            return UAVObservation(
-                features=self._get_obs_list(),
-                reward=normalized_reward,
-                done=False,
-                step_count=self.current_step,   # <-- required by ActionLog
-            )
+        self.last_reward = raw if USE_RAW_REWARD else normalised
+
+        obs = UAVObservation(
+            features=self._get_obs_list(),
+            reward=self.last_reward,
+            done=False,
+            episode_id="uav_episode",
+            step_count=self.current_step,
+            metadata=self._build_metadata(), # <--- ADDED
+        )
+        self._cached_obs = obs
+        return obs
 
     def _get_obs_list(self):
         obs = []
@@ -278,22 +268,31 @@ class UavEnvironment(Environment):
             d_nfz = float(np.linalg.norm(near_nfz_vec))
             obs.extend(
                 np.concatenate([
-                    self.target_pos[i] - self.uav_pos[i],   # (3) relative target pos
-                    self.target_vel[i] - self.uav_vel[i],   # (3) relative velocity
-                    self.uav_vel[i],                         # (3) own velocity
-                    self.wind,                               # (3) wind vector
-                    near_nfz_vec,                            # (3) vector to NFZ center
-                    [d_nfz],                                 # (1) scalar distance to NFZ
+                    self.target_pos[i] - self.uav_pos[i],
+                    self.target_vel[i] - self.uav_vel[i],
+                    self.uav_vel[i],
+                    self.wind,
+                    near_nfz_vec,
+                    [d_nfz],
                 ]).tolist()
             )
-        return obs  # 16 features x 3 agents = 48 total
+        return obs
+    
+    def _build_metadata(self) -> dict:
+        dists = [np.linalg.norm(self.uav_pos[i] - self.target_pos[i]) for i in range(3)]
+        return {
+            "task": self.current_task,
+            "current_step": int(self.current_step),
+            "avg_target_distance": round(float(np.mean(dists)), 2),
+            "wind_magnitude": round(float(np.linalg.norm(self.wind)), 2),
+            "nfz_active": self._task_nfz_active,
+        }
 
     def render(self) -> np.ndarray:
         fig = plt.figure(figsize=(10, 8))
         ax = fig.add_subplot(111, projection='3d')
         fig.subplots_adjust(right=0.75)
 
-        # Wind indicator
         wind_mag = np.linalg.norm(self.wind)
         if wind_mag > 0.1:
             ax.quiver(450, 450, 250,
@@ -303,7 +302,6 @@ class UavEnvironment(Environment):
             ax.text(450, 450, 280, f"Wind: {wind_mag:.1f} m/s",
                     color='darkcyan', fontsize=8, fontweight='bold')
 
-        # NFZ spheres (hard = red, buffer = orange)
         if self._task_nfz_active:
             for center in self.nfz_centers:
                 for radius, color, alpha in [
@@ -318,7 +316,6 @@ class UavEnvironment(Environment):
                         color=color, alpha=alpha
                     )
 
-        # UAVs and Targets
         for i in range(3):
             c = self.pair_colors[i]
             pts = np.array(self.uav_history[i])
@@ -341,23 +338,11 @@ class UavEnvironment(Environment):
 
     def _get_obs(self) -> UAVObservation:
 
-        avg_dist = 0.0
-        if len(self.uav_pos) > 0:
-            dists = [np.linalg.norm(self.uav_pos[i] - self.target_pos[i]) for i in range(3)]
-            avg_dist = float(np.mean(dists))
-
-        # Gather LIVE info for the metadata field
-        info = {
-            "task": self.current_task,
-            "current_step": int(self.current_step),  # Changes every step
-            "avg_target_distance": round(avg_dist, 2), # Changes as UAVs move
-            "wind_magnitude": round(float(np.linalg.norm(self.wind)), 2), # Changes due to OU process
-            "nfz_active": self._task_nfz_active,
-        }
-
         return UAVObservation(
             features=self._get_obs_list(),
             reward=self.last_reward,
-            step_count=self.current_step,   # <-- required by ActionLog
-            metadata=info
+            current_task=self.current_task,
+            step_count=self.current_step,
+            episode_id="uav_episode",
+            metadata=self._build_metadata(),
         )
