@@ -1,17 +1,17 @@
 # UAV Fleet Tracking Environment — `uav_env_v3_multi`
 
-> **Meta × PyTorch OpenEnv Hackathon** submission
+> **Meta × PyTorch OpenEnv Hackathon** submission  
 > Real-world RL environment: multi-UAV pursuit of evasive targets in a constrained 3-D airspace.
 
 ---
 
 ## Team — FullmetalDevs
 
-| Name                            | Role      |
-| ------------------------------- | --------- |
-| **Kushagra Gupta**              | Team Lead |
-| **Tanmay Sharad Mathurvaishya** | Member    |
-| **Shivam Chaturvedi**           | Member    |
+| Name | Role |
+|---|---|
+| **Kushagra Gupta** | Team Lead |
+| **Tanmay Sharad Mathurvaishya** | Member |
+| **Shivam Chaturvedi** | Member |
 
 ---
 
@@ -29,35 +29,22 @@ This environment is designed to closely reflect real-world multi-agent UAV opera
 
 These applications highlight the system’s ability to handle **multi-agent coordination, safety-critical constraints, stochastic environments, and adaptive decision-making**, making it suitable for both research and real-world deployment scenarios.
 
----|---|
-| 🛡️ Border & Perimeter Surveillance | Persistent pursuit of moving targets while respecting NFZs over sensitive installations |
-| 🔥 Wildfire & Disaster Response | OU wind dynamics simulate unpredictable updrafts and crosswinds field operators face |
-| 🚢 Maritime Vessel Interception | Evasive target logic mirrors vessel evasion; NFZ models shipping lane exclusion zones |
-| 🏙️ Urban Air Traffic Management | NFZ hard-wall enforcement is architecturally identical to UTM geofence boundaries |
-| 🔋 Infrastructure Inspection | Multi-UAV coordination tracking moving targets while avoiding restricted airspace |
-
----
-
 ## 🎬 Demo Videos
 
 Three difficulty levels captured from live inference runs using `inference.py`.
 
 ### Easy — Static Targets, No Wind, No NFZ
-
 ![Easy mode demo](submission_video_easy.gif)
 
 ### Medium — Random-Walk Targets, Light Wind (±1.5 m/s), No NFZ
-
 ![Medium mode demo](submission_video_medium.gif)
 
 ### Hard — Evasive Targets, Full OU Wind (±3 m/s), NFZ Active
-
 ![Hard mode demo](submission_video_hard.gif)
 
 > MP4 versions: [`easy`](submission_video_easy.mp4) · [`medium`](submission_video_medium.mp4) · [`hard`](submission_video_hard.mp4)
 
 ---
-
 ## 🚀 Overview
 
 **Category:** Strategic Multi-Agent Systems / Infrastructure
