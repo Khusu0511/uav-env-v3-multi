@@ -2,17 +2,13 @@
 UAV Fleet Tracking — Inference Script (v3)
 ==========================================
 Conforms to the Meta/PyTorch OpenEnv Hackathon submission spec:
-  - Uses OpenAI client with API_BASE_URL, MODEL_NAME, HF_TOKEN from env vars
-  - stdout: ONLY [START], [STEP], [END] lines — nothing else
-  - stderr: all debug/info/warn/error messages
-  - Exact output format:
-      [START] task=<task> env=<env_name> model=<model>
-      [STEP] step=<n> action=<str> reward=<0.00> done=<true|false> error=<msg|null>
-      [END] success=<true|false> steps=<n> rewards=<r1,r2,...>
-  - reward formatted to exactly 2 decimal places, strictly in (0.01, 0.99)
-  - [END] rewards is comma-separated list of all step rewards
-  - [END] always emitted even on exception (via finally)
-  - Runs all 3 tasks: easy, medium, hard
+- Uses OpenAI client with API_BASE_URL, MODEL_NAME, HF_TOKEN from env
+- stdout: ONLY [START] / [STEP] / [END] lines — nothing else ever
+- stderr: all debug / info / warn / error messages
+- [END] format: success=<bool> steps=<n> score=<X.XXX> rewards=<r1,r2,...>
+- score and all rewards strictly in (0.01, 0.99) — never 0.00 or 1.00
+- [END] guaranteed via finally block even on exception
+- Runs all 3 tasks: easy, medium, hard
 """
 
 import os
@@ -23,6 +19,7 @@ import time
 import textwrap
 import requests
 import numpy as np
+from typing import List
 
 try:
     import imageio
@@ -38,7 +35,7 @@ from openenv.core.generic_client import GenericEnvClient
 # ---------------------------------------------------------------------------
 API_BASE_URL = os.getenv("API_BASE_URL", "https://router.huggingface.co/v1")
 MODEL_NAME   = os.getenv("MODEL_NAME",   "meta-llama/Llama-3.3-70B-Instruct")
-HF_TOKEN     = os.getenv("HF_TOKEN")
+HF_TOKEN     = os.getenv("HF_TOKEN")     # None if not set
 
 ENV_URL           = os.getenv("ENV_URL", "http://localhost:8000")
 MAX_STEPS         = 150
@@ -50,10 +47,11 @@ OBS_PER_AGENT    = 16
 NUM_AGENTS       = 3
 _SAFE_ACTION     = [0.0] * (NUM_AGENTS * 3)
 
+
 # ---------------------------------------------------------------------------
 # REWARD CLAMPING
-# Clamp to [0.01, 0.99] so that format(r, ".2f") NEVER produces "0.00" or "1.00"
-# This satisfies the validator requirement: strictly between 0 and 1
+# Use [0.01, 0.99] so f"{r:.2f}" NEVER produces "0.00" or "1.00"
+# and f"{r:.3f}" NEVER produces "0.000" or "1.000"
 # ---------------------------------------------------------------------------
 def _clamp(v) -> float:
     return float(np.clip(v if v is not None else 0.01, 0.01, 0.99))
@@ -110,8 +108,8 @@ def get_features(res) -> list:
 def format_obs(features: list) -> str:
     lines = []
     for i in range(NUM_AGENTS):
-        b   = i * OBS_PER_AGENT
-        blk = features[b: b + OBS_PER_AGENT]
+        b    = i * OBS_PER_AGENT
+        blk  = features[b: b + OBS_PER_AGENT]
         dist = round(float(np.linalg.norm(blk[0:3])), 1)
         lines.append(
             f"UAV{i+1}|dist={dist}"
@@ -216,7 +214,7 @@ def wait_for_env(timeout: int = 60) -> bool:
         except Exception:
             pass
         time.sleep(1.0)
-    print("[WARN] Env not ready after timeout, proceeding.", file=sys.stderr, flush=True)
+    print("[WARN] Env not ready, proceeding.", file=sys.stderr, flush=True)
     return False
 
 
@@ -260,38 +258,52 @@ def fetch_frame():
 # ---------------------------------------------------------------------------
 # STRUCTURED LOG HELPERS — EXACT HACKATHON FORMAT
 #
-# stdout receives ONLY these three line types, nothing else:
+# stdout receives ONLY these three line types:
 #   [START] task=<task> env=<env_name> model=<model>
-#   [STEP] step=<n> action=<str> reward=<0.00> done=<true|false> error=<msg|null>
-#   [END] success=<true|false> steps=<n> rewards=<r1,r2,...>
+#   [STEP] step=<n> action=<json> reward=<0.00> done=<true|false> error=<msg|null>
+#   [END] success=<true|false> steps=<n> score=<0.000> rewards=<r1,r2,...>
 #
-# All rewards formatted to exactly 2 decimal places.
-# Clamped to [0.01, 0.99] so format never produces "0.00" or "1.00".
+# score and rewards clamped to [0.01, 0.99] — never 0.00 or 1.00
 # ---------------------------------------------------------------------------
-def log_start(env_name: str, task: str, model: str):
+
+def log_start(env_name: str, task: str, model: str) -> None:
+    # stdout only — clean single line
     print(f"[START] task={task} env={env_name} model={model}", flush=True)
 
 
-def log_step(step: int, action: list, reward: float, done: bool, error: str = None):
-    action_str  = json.dumps([round(v, 2) for v in action])
-    reward_str  = f"{_clamp(reward):.2f}"
-    done_str    = "true" if done else "false"
-    error_str   = error if error else "null"
+def log_step(step: int, action: list, reward: float, done: bool,
+             error: str = None) -> None:
+    action_str = json.dumps([round(v, 2) for v in action])
+    reward_str = f"{_clamp(reward):.2f}"
+    done_str   = str(done).lower()
+    error_str  = error if error else "null"
+    # stdout only
     print(
-        f"[STEP] step={step} action={action_str} reward={reward_str} done={done_str} error={error_str}",
+        f"[STEP] step={step} action={action_str} reward={reward_str} "
+        f"done={done_str} error={error_str}",
         flush=True
     )
 
 
-def log_end(success: bool, steps: int, rewards: list):
-    success_str = "true" if success else "false"
+def log_end(success: bool, steps: int, score: float, rewards: List[float]) -> None:
+    """
+    Exact format from hackathon sample inference spec:
+      [END] success=<true|false> steps=<n> score=<X.XXX> rewards=<r1,r2,...>
+    score must be strictly between 0 and 1 (not 0.0, not 1.0).
+    """
     rewards_str = ",".join(f"{_clamp(r):.2f}" for r in rewards)
-    print(f"[END] success={success_str} steps={steps} rewards={rewards_str}", flush=True)
+    safe_score  = _clamp(score)
+    # stdout only
+    print(
+        f"[END] success={str(success).lower()} steps={steps} "
+        f"score={safe_score:.3f} rewards={rewards_str}",
+        flush=True
+    )
 
 
 # ---------------------------------------------------------------------------
 # SINGLE TASK RUNNER
-# [END] guaranteed via finally block even on exception
+# [END] is guaranteed via finally — emitted even on exception
 # ---------------------------------------------------------------------------
 def run_task(env_client, llm_client, task: str, env_name: str):
     rewards      = []
@@ -300,7 +312,7 @@ def run_task(env_client, llm_client, task: str, env_name: str):
     frames       = []
     model_label  = MODEL_NAME if not llm_disabled else "rule_based"
 
-    # [START] — exactly once per task
+    # [START] — exactly once per task, to stdout
     log_start(env_name, task, model_label)
 
     try:
@@ -315,9 +327,8 @@ def run_task(env_client, llm_client, task: str, env_name: str):
                 for i in range(NUM_AGENTS):
                     features[i * OBS_PER_AGENT + 15] = 999.0
 
-            exec_action   = _SAFE_ACTION[:]
-            action_source = "safe"
-            step_error    = None
+            exec_action = _SAFE_ACTION[:]
+            step_error  = None
 
             if obs_valid:
                 llm_action = None
@@ -326,15 +337,14 @@ def run_task(env_client, llm_client, task: str, env_name: str):
                         raw        = query_llm(llm_client, f"Step {step}:\n{format_obs(features)}")
                         llm_action = parse_llm_action(raw)
                     except Exception as e:
-                        err_msg = str(e)
-                        print(f"[WARN] LLM error: {err_msg}", file=sys.stderr, flush=True)
-                        if any(c in err_msg for c in ["402", "403"]):
+                        print(f"[WARN] LLM: {e}", file=sys.stderr, flush=True)
+                        if any(c in str(e) for c in ["402", "403"]):
                             llm_disabled = True
 
                 if llm_action:
-                    exec_action, action_source = llm_action, "llm"
+                    exec_action = llm_action
                 else:
-                    exec_action, action_source = rule_based_action(features, task), "rule"
+                    exec_action = rule_based_action(features, task)
 
             try:
                 res        = env_client.step({"commands": exec_action})
@@ -352,7 +362,7 @@ def run_task(env_client, llm_client, task: str, env_name: str):
             if step % 10 == 0:
                 nfz_total += check_nfz_violations(task)
 
-            # [STEP] — exactly once per step
+            # [STEP] — exactly once per step, to stdout
             log_step(step, exec_action, safe_r, done, step_error)
 
             if IMAGEIO_AVAILABLE:
@@ -370,7 +380,7 @@ def run_task(env_client, llm_client, task: str, env_name: str):
         print(f"[ERROR] Task '{task}' aborted: {e}", file=sys.stderr, flush=True)
 
     finally:
-        # Save video — must not prevent [END] from printing
+        # Save video — errors must NOT prevent [END] from printing
         if IMAGEIO_AVAILABLE and frames:
             try:
                 imageio.mimsave(f"submission_video_{task}.mp4", frames, fps=15, macro_block_size=1)
@@ -380,12 +390,12 @@ def run_task(env_client, llm_client, task: str, env_name: str):
                 except Exception:
                     pass
 
-        # [END] — exactly once per task, GUARANTEED
-        avg = sum(rewards) / len(rewards) if rewards else 0.01
-        success = _clamp(avg) >= SUCCESS_THRESHOLD and nfz_total == 0
-        log_end(success, len(rewards), rewards)
+        # [END] — exactly once per task, GUARANTEED, to stdout
+        score   = sum(rewards) / len(rewards) if rewards else 0.01
+        success = _clamp(score) >= SUCCESS_THRESHOLD and nfz_total == 0
+        log_end(success, len(rewards), score, rewards)
 
-    return _clamp(avg if rewards else 0.01), nfz_total
+    return _clamp(score if rewards else 0.01), nfz_total
 
 
 # ---------------------------------------------------------------------------
