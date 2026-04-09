@@ -24,17 +24,15 @@ class UavEnv(
 ):
     """
     Client for the UAV Fleet Tracking Environment.
-
     Example (sync):
         with UavEnv(base_url="http://localhost:8000").sync() as client:
             result = client.reset()
-            print(result.observation.features[:3])   # rel_pos of UAV 1
+            print(result.observation.features[:3])  # rel_pos of UAV 1
             action = UAVAction(commands=[0.5, -0.3, 0.1,
-                                         0.0,  0.8, -0.2,
-                                        -0.4,  0.1,  0.6])
+                                          0.0,  0.8, -0.2,
+                                         -0.4,  0.1,  0.6])
             result = client.step(action)
             print(result.reward)
-
     Example (async):
         async with UavEnv(base_url="http://localhost:8000") as client:
             result = await client.reset()
@@ -48,45 +46,43 @@ class UavEnv(
     def _parse_result(self, payload: Dict) -> StepResult[UAVObservation]:
         """
         Parse server response into StepResult[UAVObservation].
-        Handles both flat (top-level) and nested (under "observation") layouts.
-
-        Reward is clamped to [0.01, 0.99] so that at 2 decimal places it is
-        NEVER 0.00 or 1.00 — both of which cause the validator to reject the
-        submission with "score out of range".
+        Handles both flat payloads (fields at top level) and nested payloads
+        (fields under "observation" key), reading all required log fields:
+          done, reward, metadata, features, episode_id, step_count
         """
         obs_data = payload.get("observation", {})
 
+        # Support flat (top-level) and nested (under "observation") layouts
         def _get(key, default):
             return obs_data.get(key, payload.get(key, default))
 
         features   = _get("features",   [0.0] * 48)
-        reward     = float(_get("reward",   0.01))
-        done       = bool(_get("done",      False))
-        episode_id = _get("episode_id", "uav_episode")
-        step_count = int(_get("step_count", 0))
-        metadata   = _get("metadata",   None)
+        reward     = float(_get("reward",  1e-5 ))
+        done       = bool(_get("done",       False))
+        episode_id = _get("episode_id",  "uav_episode")
+        step_count = int(_get("step_count",  0))
+        metadata   = _get("metadata",    None)
 
-        # Clamp to open interval (0, 1) — 0.01 and 0.99 are safe at 2dp
-        safe_reward = float(np.clip(reward, 0.01, 0.99))
+        _safe_reward = float(np.clip(reward, 1e-5, 0.99999))
 
         observation = UAVObservation(
-            features   = features,
-            reward     = safe_reward,
-            done       = done,
-            episode_id = episode_id,
-            step_count = step_count,
-            metadata   = metadata,
+            features=features,
+            reward=_safe_reward,
+            done=done,
+            episode_id=episode_id,
+            step_count=step_count,
+            metadata=metadata,
         )
 
         return StepResult(
-            observation = observation,
-            reward      = safe_reward,
-            done        = done,
+            observation=observation,
+            reward=_safe_reward,
+            done=done,
         )
 
     def _parse_state(self, payload: Dict) -> State:
         """Parse server response into State object."""
         return State(
-            episode_id = payload.get("episode_id", "uav_episode"),
-            step_count = payload.get("step_count", 0),
+            episode_id=payload.get("episode_id", "uav_episode"),
+            step_count=payload.get("step_count", 0),
         )
