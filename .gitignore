@@ -17,3 +17,7 @@ __pycache__/
 # Media Files (Uncomment these if you want to keep videos OFF GitHub)
 # submission_video.mp4
 # submission_video.gif
+
+# Massive Binaries
+*.exe
+ffmpeg-win-x86_64-v7.1.exe
