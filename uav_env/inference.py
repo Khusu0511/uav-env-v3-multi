@@ -2,20 +2,17 @@
 UAV Fleet Tracking — Inference Script (v3)
 ==========================================
 Conforms to the Meta/PyTorch OpenEnv Hackathon submission spec:
-- Uses OpenAI client with API_BASE_URL, MODEL_NAME, HF_TOKEN from env
-- Emits structured [START] / [STEP] / [END] stdout logs
-- Rule-based fallback when LLM output cannot be parsed
-- Must complete within 20 min on vcpu=2, memory=8 GB
-- Runs all 3 tasks: easy, medium, hard
-Setup:
-pip install openai openenv numpy requests imageio
-Environment variables (define in .env or export before running):
-API_BASE_URL — LLM endpoint (e.g. https://router.huggingface.co/v1)
-MODEL_NAME   — model id (e.g. meta-llama/Llama-3.3-70B-Instruct)
-HF_TOKEN     — HF / API key
-Run:
-export $(cat .env | xargs)
-python inference.py
+  - Uses OpenAI client with API_BASE_URL, MODEL_NAME, HF_TOKEN from env vars
+  - stdout: ONLY [START], [STEP], [END] lines — nothing else
+  - stderr: all debug/info/warn/error messages
+  - Exact output format:
+      [START] task=<task> env=<env_name> model=<model>
+      [STEP] step=<n> action=<str> reward=<0.00> done=<true|false> error=<msg|null>
+      [END] success=<true|false> steps=<n> rewards=<r1,r2,...>
+  - reward formatted to exactly 2 decimal places, strictly in (0.01, 0.99)
+  - [END] rewards is comma-separated list of all step rewards
+  - [END] always emitted even on exception (via finally)
+  - Runs all 3 tasks: easy, medium, hard
 """
 
 import os
@@ -37,29 +34,37 @@ from openai import OpenAI
 from openenv.core.generic_client import GenericEnvClient
 
 # ---------------------------------------------------------------------------
-# CONFIG — all sensitive values come from environment variables
+# CONFIG
 # ---------------------------------------------------------------------------
 API_BASE_URL = os.getenv("API_BASE_URL", "https://router.huggingface.co/v1")
 MODEL_NAME   = os.getenv("MODEL_NAME",   "meta-llama/Llama-3.3-70B-Instruct")
-HF_TOKEN     = os.getenv("HF_TOKEN",     "")
+HF_TOKEN     = os.getenv("HF_TOKEN")
 
 ENV_URL           = os.getenv("ENV_URL", "http://localhost:8000")
-MAX_STEPS         = 150   # safe under 20 min on 2 vCPU / 8 GB
-LLM_CALL_EVERY    = 25    # call LLM every N steps; rule-based fills the rest
-SUCCESS_THRESHOLD = 0.35  # normalised reward (0–1) to mark run successful
+MAX_STEPS         = 150
+LLM_CALL_EVERY    = 25
+SUCCESS_THRESHOLD = 0.35
 
-# NFZ is ONLY active on hard — easy and medium must never see NFZ spheres
 NFZ_ACTIVE_TASKS = {"hard"}
 OBS_PER_AGENT    = 16
 NUM_AGENTS       = 3
 _SAFE_ACTION     = [0.0] * (NUM_AGENTS * 3)
 
 # ---------------------------------------------------------------------------
-# OPENAI CLIENT (hackathon mandates OpenAI client for all LLM calls)
+# REWARD CLAMPING
+# Clamp to [0.01, 0.99] so that format(r, ".2f") NEVER produces "0.00" or "1.00"
+# This satisfies the validator requirement: strictly between 0 and 1
+# ---------------------------------------------------------------------------
+def _clamp(v) -> float:
+    return float(np.clip(v if v is not None else 0.01, 0.01, 0.99))
+
+
+# ---------------------------------------------------------------------------
+# OPENAI CLIENT
 # ---------------------------------------------------------------------------
 def build_openai_client():
     if not HF_TOKEN:
-        print("[INFO] HF_TOKEN not set — LLM disabled, running rule-based only.")
+        print("[INFO] HF_TOKEN not set — running rule-based only.", file=sys.stderr, flush=True)
         return None
     return OpenAI(base_url=API_BASE_URL, api_key=HF_TOKEN)
 
@@ -68,15 +73,15 @@ def build_openai_client():
 # SYSTEM PROMPT
 # ---------------------------------------------------------------------------
 SYSTEM_PROMPT = textwrap.dedent(f"""
-    You control {NUM_AGENTS} UAVs in a 500×500×300 m airspace to intercept moving targets.
+    You control {NUM_AGENTS} UAVs in a 500x500x300 m airspace to intercept moving targets.
     Avoid walls and the No-Fly Zone (NFZ). Large penalties for violations.
     Observation per UAV ({OBS_PER_AGENT} values, {NUM_AGENTS} UAVs = {OBS_PER_AGENT * NUM_AGENTS} total):
-    [0:3]  rel_pos — target_pos - uav_pos (m)
-    [3:6]  rel_vel — target_vel - uav_vel (m/s)
-    [6:9]  uav_vel — own velocity (m/s)
-    [9:12] wind    — wind vector (m/s)
-    [12:15] nfz_vec — vector from UAV to NFZ center (m)
-    [15]   d_nfz  — distance to NFZ surface (m)
+    [0:3]  rel_pos  -- target_pos - uav_pos (m)
+    [3:6]  rel_vel  -- target_vel - uav_vel (m/s)
+    [6:9]  uav_vel  -- own velocity (m/s)
+    [9:12] wind     -- wind vector (m/s)
+    [12:15] nfz_vec -- vector from UAV to NFZ center (m)
+    [15]   d_nfz   -- distance to NFZ surface (m)
     Action priority rules:
     1. WALLS: if uav_vel[dim]>4 subtract 0.4; if <-4 add 0.4.
     2. NFZ: if d_nfz<85, flee: cmd=-normalize(nfz_vec). Skip other rules.
@@ -105,7 +110,7 @@ def get_features(res) -> list:
 def format_obs(features: list) -> str:
     lines = []
     for i in range(NUM_AGENTS):
-        b = i * OBS_PER_AGENT
+        b   = i * OBS_PER_AGENT
         blk = features[b: b + OBS_PER_AGENT]
         dist = round(float(np.linalg.norm(blk[0:3])), 1)
         lines.append(
@@ -119,27 +124,14 @@ def format_obs(features: list) -> str:
         )
     return "\n".join(lines)
 
-def extract_obs_summary(features: list) -> list:
-    summary = []
-    for i in range(NUM_AGENTS):
-        b = i * OBS_PER_AGENT
-        blk = features[b: b + OBS_PER_AGENT]
-        summary.append({
-            "agent":          i + 1,
-            "dist_to_target": round(float(np.linalg.norm(blk[0:3])), 2),
-            "rel_pos":        [round(v, 3) for v in blk[0:3]],
-            "uav_vel":        [round(v, 3) for v in blk[6:9]],
-            "d_nfz":          round(blk[15], 2),
-        })
-    return summary
 
 # ---------------------------------------------------------------------------
-# RULE-BASED CONTROLLER (no LLM required — produces positive rewards)
+# RULE-BASED CONTROLLER
 # ---------------------------------------------------------------------------
 def rule_based_action(features: list, task: str) -> list:
     action = []
     for i in range(NUM_AGENTS):
-        b = i * OBS_PER_AGENT
+        b       = i * OBS_PER_AGENT
         rel_pos = np.array(features[b + 0: b + 3])
         rel_vel = np.array(features[b + 3: b + 6])
         uav_vel = np.array(features[b + 6: b + 9])
@@ -148,7 +140,6 @@ def rule_based_action(features: list, task: str) -> list:
         d_nfz   = float(features[b + 15])
         dist    = float(np.linalg.norm(rel_pos))
 
-        # P1: Boundary repulsion
         boundary = np.zeros(3)
         for dim in range(3):
             if uav_vel[dim] > 4.0:
@@ -156,38 +147,33 @@ def rule_based_action(features: list, task: str) -> list:
             elif uav_vel[dim] < -4.0:
                 boundary[dim] += 0.4
 
-        # P2: NFZ avoidance — only meaningful on hard task
-        # Use for gate NFZ flee logic on task to prevent spurious avoidance
-        # on easy/medium (where d_nfz is masked to 999 anyway, but belt+braces)
         if task in NFZ_ACTIVE_TASKS and d_nfz < 85.0:
-            nfz_n = np.linalg.norm(nfz_vec)
-            flee = -nfz_vec / (nfz_n + 1e-8)
+            nfz_n   = np.linalg.norm(nfz_vec)
+            flee    = -nfz_vec / (nfz_n + 1e-8)
             urgency = 1.0 - (d_nfz / 85.0)
-            cmd = flee * (0.6 + 0.4 * urgency) + boundary
+            cmd     = flee * (0.6 + 0.4 * urgency) + boundary
             action.extend(np.clip(cmd, -1.0, 1.0).tolist())
             continue
 
-        # P3: Velocity lock (capture zone)
         if dist < 15.0:
             match = uav_vel + rel_vel
-            n = np.linalg.norm(match)
-            cmd = (match / (n + 1e-8)) + boundary
+            n     = np.linalg.norm(match)
+            cmd   = (match / (n + 1e-8)) + boundary
             action.extend(np.clip(cmd, -1.0, 1.0).tolist())
             continue
 
-        # P4: Intercept + wind feedforward
         intercept = rel_pos / (dist + 1e-8)
         urgency   = float(np.clip(dist / 60.0, 0.3, 1.0))
         wind_n    = np.linalg.norm(wind)
         wind_comp = (-wind / (wind_n + 1e-8)) * min(wind_n / 8.0, 0.25)
-        cmd = intercept * urgency + wind_comp + boundary
+        cmd       = intercept * urgency + wind_comp + boundary
         action.extend(np.clip(cmd, -1.0, 1.0).tolist())
 
     return action
 
 
 # ---------------------------------------------------------------------------
-# LLM ACTION PARSER
+# LLM HELPERS
 # ---------------------------------------------------------------------------
 def parse_llm_action(raw: str):
     try:
@@ -197,7 +183,7 @@ def parse_llm_action(raw: str):
         inner = match.group(1)
         inner = re.sub(r'(?<=[\d.])\s+(?=-?[\d.])', ',', inner)
         inner = re.sub(r'(?<=\d)(?=-[0-9])', ',', inner)
-        vals = json.loads(f'[{inner}]')
+        vals  = json.loads(f'[{inner}]')
         if not isinstance(vals, list) or len(vals) != 9:
             return None
         return [float(np.clip(v, -1.0, 1.0)) for v in vals]
@@ -221,7 +207,7 @@ def query_llm(client: OpenAI, obs_text: str) -> str:
 # ---------------------------------------------------------------------------
 # ENV HELPERS
 # ---------------------------------------------------------------------------
-def wait_for_env(timeout: int = 30) -> bool:
+def wait_for_env(timeout: int = 60) -> bool:
     for _ in range(timeout):
         try:
             r = requests.get(f"{ENV_URL}/health", timeout=2)
@@ -230,46 +216,37 @@ def wait_for_env(timeout: int = 30) -> bool:
         except Exception:
             pass
         time.sleep(1.0)
+    print("[WARN] Env not ready after timeout, proceeding.", file=sys.stderr, flush=True)
     return False
 
 
 def wait_for_task(expected_task: str, timeout: int = 15) -> bool:
-    """
-    Poll /health until the server-side env reports the correct task.
-    This guards against a race where reset() is in flight when the first
-    frame is captured, causing the still-initialised "hard" defaults to be
-    rendered instead of the requested task's config.
-    """
     for _ in range(timeout):
         try:
             r = requests.get(f"{ENV_URL}/health", timeout=2)
-            if r.status_code == 200:
-                data = r.json()
-                if data.get("task") == expected_task:
-                    return True
+            if r.status_code == 200 and r.json().get("task") == expected_task:
+                return True
         except Exception:
             pass
         time.sleep(1.0)
-    print(f"[WARN] Timed out waiting for task={expected_task} on server; proceeding anyway.",
-          file=sys.stderr, flush=True)
+    print(f"[WARN] Timeout waiting for task={expected_task}.", file=sys.stderr, flush=True)
     return False
 
 
 def check_nfz_violations(task: str) -> int:
     if task not in NFZ_ACTIVE_TASKS:
-        return 0  # NFZ disabled for easy/medium — ignore ghost violations
-
-    violations = 0
+        return 0
     try:
         r = requests.get(f"{ENV_URL}/nfz_status", timeout=2)
         if r.status_code == 200:
-            for uav in r.json().get("uav_nfz_report", []):
-                for chk in uav.get("nfz_checks", []):
-                    if chk.get("hard_violation"):
-                        violations += 1
+            return sum(
+                1 for uav in r.json().get("uav_nfz_report", [])
+                for chk in uav.get("nfz_checks", [])
+                if chk.get("hard_violation")
+            )
     except Exception:
         pass
-    return violations
+    return 0
 
 
 def fetch_frame():
@@ -281,202 +258,138 @@ def fetch_frame():
 
 
 # ---------------------------------------------------------------------------
-# STRUCTURED LOG HELPERS
-# Hackathon spec: lines must be prefixed [START] / [STEP] / [END]
-# followed by a JSON payload on the same line.
+# STRUCTURED LOG HELPERS — EXACT HACKATHON FORMAT
+#
+# stdout receives ONLY these three line types, nothing else:
+#   [START] task=<task> env=<env_name> model=<model>
+#   [STEP] step=<n> action=<str> reward=<0.00> done=<true|false> error=<msg|null>
+#   [END] success=<true|false> steps=<n> rewards=<r1,r2,...>
+#
+# All rewards formatted to exactly 2 decimal places.
+# Clamped to [0.01, 0.99] so format never produces "0.00" or "1.00".
 # ---------------------------------------------------------------------------
-def log_start(env_name: str, task: str, max_steps: int, model: str):
-    payload = {
-        "env_name":  env_name,
-        "task":      task,
-        "max_steps": max_steps,
-        "model":     model,
-    }
-    print(f"[START] {json.dumps(payload)}", flush=True)
+def log_start(env_name: str, task: str, model: str):
+    print(f"[START] task={task} env={env_name} model={model}", flush=True)
 
-# ---------------------------------------------------------------------------
-# STRUCTURED LOG HELPERS
-# ---------------------------------------------------------------------------
-def log_step(step: int, action: list, reward: float, done: bool,
-             action_source: str, nfz_violations: int, obs_state: list = None):
-    # Ensure step reward is strictly within (0, 1) for grader compliance
-    safe_reward = float(np.clip(reward, 1e-5, 0.99999))
-    
-    payload = {
-        "step": step,
-        "action": [round(v, 4) for v in action],
-        "reward": round(safe_reward, 4),
-        "done": done,
-        "action_source": action_source,
-        "nfz_violations": nfz_violations,
-    }
-    if obs_state:
-        payload["observation"] = obs_state
-    print(f"[STEP] {json.dumps(payload)}", flush=True)
 
-def log_end(total_steps: int, avg_reward: float, success: bool,
-            nfz_total: int, model: str, llm_ok: int, llm_fail: int):
-    # Grader requires task score strictly between 0 and 1.
-    # This ensures a perfect 1.0 or a failed 0.0 is nudged into range.
-    safe_avg = float(np.clip(avg_reward, 1e-4, 0.9999))
-    
-    payload = {
-        "total_steps":        total_steps,
-        "avg_reward":         round(safe_avg, 4),
-        "success":            success,
-        "nfz_hard_violations": nfz_total,
-        "model":              model,
-        "llm_calls_ok":       llm_ok,
-        "llm_calls_fail":     llm_fail,
-    }
-    print(f"[END] {json.dumps(payload)}", flush=True)
+def log_step(step: int, action: list, reward: float, done: bool, error: str = None):
+    action_str  = json.dumps([round(v, 2) for v in action])
+    reward_str  = f"{_clamp(reward):.2f}"
+    done_str    = "true" if done else "false"
+    error_str   = error if error else "null"
+    print(
+        f"[STEP] step={step} action={action_str} reward={reward_str} done={done_str} error={error_str}",
+        flush=True
+    )
+
+
+def log_end(success: bool, steps: int, rewards: list):
+    success_str = "true" if success else "false"
+    rewards_str = ",".join(f"{_clamp(r):.2f}" for r in rewards)
+    print(f"[END] success={success_str} steps={steps} rewards={rewards_str}", flush=True)
+
 
 # ---------------------------------------------------------------------------
 # SINGLE TASK RUNNER
+# [END] guaranteed via finally block even on exception
 # ---------------------------------------------------------------------------
 def run_task(env_client, llm_client, task: str, env_name: str):
-    """Run one full episode for a given task. Returns (avg_reward, nfz_total)."""
-    rewards    = []
-    nfz_total  = 0
-    llm_ok     = 0
-    llm_fail   = 0
-    frames     = []
+    rewards      = []
+    nfz_total    = 0
     llm_disabled = llm_client is None
+    frames       = []
+    model_label  = MODEL_NAME if not llm_disabled else "rule_based"
 
-    task_label = (
-        f"Multi-UAV pursuit [{task}]: "
-        f"intercept targets while avoiding NFZ and boundaries"
-    )
-
-    log_start(
-        env_name  = env_name,
-        task      = task_label,
-        max_steps = MAX_STEPS,
-        model     = MODEL_NAME if not llm_disabled else "rule_based",
-    )
+    # [START] — exactly once per task
+    log_start(env_name, task, model_label)
 
     try:
-        # Reset with task option — inside try so [END] is always emitted
         res = env_client.reset(options={"task": task})
-
-        # wait until the server-side env has confirmed the correct task
-        # before we start capturing frames. Without this, frame 0 (and
-        # sometimes frame 1) could be rendered with the previous task's
-        # config (or the hard defaults from __init__).
         wait_for_task(task, timeout=20)
 
         for step in range(1, MAX_STEPS + 1):
-            features = get_features(res)
+            features  = get_features(res)
             obs_valid = len(features) == OBS_PER_AGENT * NUM_AGENTS
 
-            # Mask NFZ data on easy/medium tasks so neither LLM nor
-            # rule-based logic tries to flee a non-existent NFZ.
             if obs_valid and task not in NFZ_ACTIVE_TASKS:
                 for i in range(NUM_AGENTS):
                     features[i * OBS_PER_AGENT + 15] = 999.0
 
-            action_source = "safe"
             exec_action   = _SAFE_ACTION[:]
+            action_source = "safe"
+            step_error    = None
 
             if obs_valid:
                 llm_action = None
-
                 if not llm_disabled and (step == 1 or step % LLM_CALL_EVERY == 0):
                     try:
-                        raw = query_llm(llm_client, f"Step {step}:\n{format_obs(features)}")
+                        raw        = query_llm(llm_client, f"Step {step}:\n{format_obs(features)}")
                         llm_action = parse_llm_action(raw)
-                        if llm_action:
-                            llm_ok += 1
-                        else:
-                            llm_fail += 1
                     except Exception as e:
-                        llm_fail += 1
-                        err = str(e)
-                        if any(code in err for code in ["402", "403"]):
+                        err_msg = str(e)
+                        print(f"[WARN] LLM error: {err_msg}", file=sys.stderr, flush=True)
+                        if any(c in err_msg for c in ["402", "403"]):
                             llm_disabled = True
 
-                if llm_action is not None:
-                    exec_action   = llm_action
-                    action_source = "llm"
+                if llm_action:
+                    exec_action, action_source = llm_action, "llm"
                 else:
-                    # Used to pass task into rule_based_action so NFZ flee is
-                    # gated correctly at the controller level too
-                    exec_action   = rule_based_action(features, task)
-                    action_source = "rule"
+                    exec_action, action_source = rule_based_action(features, task), "rule"
 
-            # Step environment
-            res = env_client.step({"commands": exec_action})
-            rewards.append(res.reward)
-            post_features = get_features(res)                          # ← add this
-            obs_state = extract_obs_summary(post_features) if post_features else None  # ← add this
+            try:
+                res        = env_client.step({"commands": exec_action})
+                raw_reward = float(res.reward) if res.reward is not None else 0.01
+                safe_r     = _clamp(raw_reward)
+                done       = bool(getattr(res, "done", False))
+            except Exception as e:
+                step_error = str(e)
+                print(f"[WARN] Step error: {step_error}", file=sys.stderr, flush=True)
+                safe_r = 0.01
+                done   = False
 
-            # NFZ check every 10 steps
-            step_nfz = 0
+            rewards.append(safe_r)
+
             if step % 10 == 0:
-                step_nfz  = check_nfz_violations(task)
-                nfz_total += step_nfz
+                nfz_total += check_nfz_violations(task)
 
-            log_step(
-                step         = step,
-                action       = exec_action,
-                reward       = res.reward,
-                done         = bool(getattr(res, "done", False)),
-                action_source = action_source,
-                nfz_violations = step_nfz,
-                obs_state     = obs_state
-            )
+            # [STEP] — exactly once per step
+            log_step(step, exec_action, safe_r, done, step_error)
 
-            # Capture render frame
             if IMAGEIO_AVAILABLE:
-                frame_bytes = fetch_frame()
-                if frame_bytes:
+                fb = fetch_frame()
+                if fb:
                     try:
-                        frames.append(imageio.v3.imread(frame_bytes))
+                        frames.append(imageio.v3.imread(fb))
                     except Exception:
                         pass
 
-            # Early exit if episode is done
-            if bool(getattr(res, "done", False)):
+            if done:
                 break
 
     except Exception as e:
         print(f"[ERROR] Task '{task}' aborted: {e}", file=sys.stderr, flush=True)
 
     finally:
-        # Save per-task video
+        # Save video — must not prevent [END] from printing
         if IMAGEIO_AVAILABLE and frames:
             try:
-                imageio.mimsave(
-                    f"submission_video_{task}.mp4", frames,
-                    fps=15, macro_block_size=1
-                )
+                imageio.mimsave(f"submission_video_{task}.mp4", frames, fps=15, macro_block_size=1)
             except Exception:
                 try:
-                    imageio.mimsave(
-                        f"submission_video_{task}.gif", frames, fps=15
-                    )
+                    imageio.mimsave(f"submission_video_{task}.gif", frames, fps=15)
                 except Exception:
                     pass
 
-    avg_reward = sum(rewards) / len(rewards) if rewards else 1e-5
-    avg_reward = float(np.clip(avg_reward, 1e-5, 0.99999))   # strictly (0,1)
-    success    = avg_reward >= SUCCESS_THRESHOLD and nfz_total == 0
+        # [END] — exactly once per task, GUARANTEED
+        avg = sum(rewards) / len(rewards) if rewards else 0.01
+        success = _clamp(avg) >= SUCCESS_THRESHOLD and nfz_total == 0
+        log_end(success, len(rewards), rewards)
 
-    log_end(
-        total_steps = len(rewards),
-        avg_reward  = avg_reward,
-        success     = success,
-        nfz_total   = nfz_total,
-        model       = MODEL_NAME if not llm_disabled else "rule_based",
-        llm_ok      = llm_ok,
-        llm_fail    = llm_fail,
-    )
-
-    return avg_reward, nfz_total
+    return _clamp(avg if rewards else 0.01), nfz_total
 
 
 # ---------------------------------------------------------------------------
-# MAIN — runs easy → medium → hard in sequence
+# MAIN
 # ---------------------------------------------------------------------------
 def main():
     llm_client = build_openai_client()
@@ -485,26 +398,10 @@ def main():
 
     wait_for_env(timeout=60)
 
-    all_results = {}
-
-    # Use context manager to ensure clean connection lifecycle
     with GenericEnvClient(base_url=ENV_URL).sync() as env_client:
         for task in tasks:
-            avg_reward, nfz_total = run_task(env_client, llm_client, task, env_name)
-            all_results[task] = {
-                "avg_reward":    avg_reward,
-                "nfz_violations": nfz_total,
-            }
-            time.sleep(1.0)  # brief pause between tasks
-
-    # Final summary to stderr (not part of grader log)
-    print("\n[SUMMARY]", file=sys.stderr)
-    for task, r in all_results.items():
-        print(
-            f"  {task:6s} | avg_reward={r['avg_reward']:.4f}"
-            f" | nfz_violations={r['nfz_violations']}",
-            file=sys.stderr,
-        )
+            run_task(env_client, llm_client, task, env_name)
+            time.sleep(1.0)
 
 
 if __name__ == "__main__":

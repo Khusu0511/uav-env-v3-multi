@@ -1,3 +1,13 @@
+---
+title: UAV Env v3 Multi
+emoji: 🚁
+colorFrom: blue
+colorTo: indigo
+sdk: docker
+app_port: 8000
+base_path: /web
+---
+
 # UAV Fleet Tracking Environment — `uav_env_v3_multi`
 
 > **Meta × PyTorch OpenEnv Hackathon** submission  

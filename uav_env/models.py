@@ -42,7 +42,7 @@ class UAVObservation(Observation):
     """
     features:   List[float]              = Field(default_factory=list)
     episode_id: Optional[str]            = Field(default=None)
-    reward:     Optional[float]          = Field(default=0.0)
+    reward:     Optional[float]          = Field(default=1e-4)
     done:       Optional[bool]           = Field(default=False)
     metadata:   Optional[Dict[str, Any]] = Field(default_factory=dict)
     step_count: Optional[int]            = Field(default=0)
