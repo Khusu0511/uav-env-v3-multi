@@ -1,67 +1,20 @@
 spec_version: 1
 name: uav_env_v3_multi
-name_slug: uav_env_v3_multi
-version: "1.0.0"
+version: "0.1.0"
 author: "FullmetalDevs"
-description: >
-  Multi-UAV 3D fleet pursuit environment. Three UAVs intercept moving targets
-  in a 500x500x300 m airspace under stochastic wind, NFZ enforcement, and
-  evasive target dynamics. Built with OpenEnv for the Meta x PyTorch Hackathon.
+description: "Multi-UAV 3D fleet pursuit with evasive targets, stochastic OU wind, and hard NFZ enforcement. Built with OpenEnv for the Meta x PyTorch Hackathon."
 type: space
 runtime: fastapi
 app: server.app:app
 port: 8000
-
-observation_space:
-  type: structured
-  description: >
-    48-dimensional float vector: 16 features x 3 agents. Per-agent block
-    contains relative target position (3), relative velocity (3), own velocity
-    (3), wind vector (3), NFZ direction vector (3), NFZ distance (1).
-
-action_space:
-  type: structured
-  description: >
-    9-dimensional float vector: [vx, vy, vz] velocity commands for each of
-    3 UAVs. Each value in [-1, 1], scaled internally by cmd_scale = 8 m/s.
-
-endpoints:
-  health: /health
-  reset: /reset
-  step: /step
-  state: /state
-  schema: /schema
-
+multi_task: true 
 tasks:
   - id: easy
+    description: "3 UAVs, static targets, no wind, no NFZ"
     difficulty: easy
-    steps: 150
-    description: >
-      3 UAVs pursue 3 static targets in calm conditions.
-      No wind, no NFZ. Baseline pursuit task.
-
   - id: medium
+    description: "3 UAVs, random-walk targets, light wind (1.5 m/s), no NFZ"
     difficulty: medium
-    steps: 150
-    description: >
-      3 UAVs pursue 3 randomly-walking targets with light wind (1.5 m/s).
-      No NFZ. Tests wind compensation and dynamic target tracking.
-
   - id: hard
+    description: "3 UAVs, evasive targets, full OU wind (3 m/s), NFZ active"
     difficulty: hard
-    steps: 150
-    description: >
-      3 UAVs pursue 3 evasive targets under full OU wind (3 m/s) with an
-      active No-Fly Zone. Tests NFZ avoidance, wind rejection, and pursuit
-      under adversarial target dynamics.
-
-scoring:
-  reward_range: [0.01, 0.99]
-  score_range_open_interval: true
-  success_threshold: 0.35
-  score_formula: avg_step_reward_clamped_to_open_interval
-
-constraints:
-  max_runtime_seconds: 1200
-  max_memory_gb: 8
-  max_vcpu: 2

@@ -19,8 +19,8 @@ from server.uav_env_environment import UavEnvironment
 # ---------------------------------------------------------------------------
 # Create the OpenEnv FastAPI app via create_app — handles /reset, /step, /state
 # env_name must match the name used in inference.py log_start() calls.
-# DO NOT add a custom @app.post("/reset") — it breaks the validator response format.
 # ---------------------------------------------------------------------------
+
 app = create_app(
     UavEnvironment,
     UAVAction,
@@ -28,6 +28,11 @@ app = create_app(
     env_name="uav_env_v3_multi",
     max_concurrent_envs=1,
 )
+
+@app.get("/reset")
+async def reset_get():
+    """Liveness probe used by the hackathon validator."""
+    return JSONResponse({"status": "ok", "env_name": "uav_env_v3_multi"})
 
 
 @app.get("/render")
@@ -96,7 +101,6 @@ async def nfz_status():
             "nfz_checks": violations,
         })
     return JSONResponse({"uav_nfz_report": report})
-
 
 def main():
     import uvicorn
